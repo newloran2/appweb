@@ -2457,11 +2457,9 @@ module ejs {
             @options detach Boolean If true, run the command and return immediately. If detached, finalize() must be
                 called to signify the end of data being written to the command's stdin.
             @options dir Path or String. Directory to set as the current working directory for the command.
-            @options exception Boolean If true, throw exceptions if the command returns a non-zero status code. 
+            @options exceptions Boolean If true, throw exceptions if the command returns a non-zero status code. 
                 Defaults to false.
             @options timeout Number This is the default number of milliseconds for the command to complete.
-            @options noio Don't capture stdout from the command. If true, the command's standard output will go to the 
-                application's current standard output. Defaults to false.
          */
         native function Cmd(command: Object = null, options: Object = null)
 
@@ -2783,34 +2781,42 @@ module ejs {
             @param command Command or program to execute
             @param options Command options hash. Supported options are:
             @options detach Boolean If true, run the command and return immediately. If detached, finalize() must be
-                called to signify the end of data being written to the command's stdin.
+                called to signify the end of data being written to the command's stdin. In this case, run returns null.
             @options dir Path or String. Directory to set as the current working directory for the command.
-            @options exception Boolean If true, throw exceptions if the command returns a non-zero status code. 
+            @options exceptions Boolean If true, throw exceptions if the command returns a non-zero status code. 
                 Defaults to true.
             @options timeout Number This is the default number of milliseconds for the command to complete.
-            @options noio Don't capture stdout from the command. If true, the command's standard output will go to the 
-                application's current standard output. Defaults to false.
+            @options stream Stream the stdout from the command to the current standard output. Defaults to false.
             @param data Optional data to write to the command on it's standard input.
             @returns The command output from the standard output.
             @throws IOError if the command exits with non-zero status. The exception object will contain the command's
                 standard error output. 
          */
-        static function run(command: Object, options: Object = {}, data: Object = null): String {
+        static function run(command: Object, options: Object = {}, data: Object = null): String? {
             options ||= {}
-            if (options.exception == null) {
-                options.exception = true
-            }
             let cmd = new Cmd
+            let results = new ByteArray
+            cmd.on('readable', function(event, cmd) {
+                let buf = new ByteArray
+                cmd.read(buf, -1)
+                if (options.stream) {
+                    prints(buf)
+                }
+                results.write(buf)
+            })
             cmd.start(command, blend({detach: true}, options))
+            if (options.detach) {
+                return null
+            }
             if (data) {
                 cmd.write(data)
             }
             cmd.finalize()
             cmd.wait()
-            if (cmd.status != 0 && options.exception) {
-                throw new IOError(cmd.error)
+            if (cmd.status != 0 && options.exceptions !== false) {
+                throw new IOError('Command failed, status ' + cmd.status + '\n' + cmd.error)
             }
-            return cmd.readString()
+            return results.toString()
         }
 
         /**
@@ -2820,13 +2826,12 @@ module ejs {
                 an array of arguments. 
             @param options Command options hash. Supported options are:
             @options detach Boolean If true, run the command and return immediately. If detached, finalize() must be
-                called to signify the end of data being written to the command's stdin.
+                called to signify the end of data being written to the command's stdin. In this case, sh returns null.
             @options dir Path or String. Directory to set as the current working directory for the command.
-            @options exception Boolean If true, throw exceptions if the command returns a non-zero status code. 
+            @options exceptions Boolean If true, throw exceptions if the command returns a non-zero status code. 
                 Defaults to true.
             @options timeout Number This is the default number of milliseconds for the command to complete.
-            @options noio Don't capture stdout from the command. If true, the command's standard output will go to the 
-                application's current standard output. Defaults to false.
+            @options stream Stream the stdout from the command to the current standard output. Defaults to false.
             @param data Optional data to write to the command on it's standard input.
             @return The command output from the standard output.
             @throws IOError if the command exits with non-zero status. The exception object will contain the command's
@@ -5226,6 +5231,7 @@ module ejs {
     /** 
         Evaluate a script. Not present in ejsvm.
         @param script Script string to evaluate
+        @param cache Path to cache file to save compiled script
         @returns the the script expression value.
      */
     native function eval(script: String, cache: String? = null): Object
@@ -5272,6 +5278,16 @@ module ejs {
         @spec ejs
      */
     native function print(...args): void
+
+    /* 
+        Print the arguments to the standard output without a new line appended. This call evaluates the arguments, 
+        converts the result to strings and prints the result to the standard output. Arguments are converted to 
+        strings by calling their toString method. 
+        @param args Variables to print
+        @spec ejs
+     */
+    function prints(...args): Void
+        App.outputStream.write(...args)
 
     /** 
         Print the arguments to the standard output using the supplied format template. This call evaluates the arguments, 
@@ -8814,9 +8830,9 @@ module ejs {
             @param destination New file location
             @param options Object hash
             @options permissions Set to a numeric Posix permissions mask. Not implemented.
-            @options user String representing the file user name
+            @options user String representing the file user name or numeric user id.
                 If both user and uid are specified, user takes precedence. 
-            @options group String representing the file group name
+            @options group String representing the file group name or numeric group id.
                 If both group and gid are specified, group takes precedence.
             @options uid Number representing the file user id
             @options gid Number representing the file group id
@@ -8850,6 +8866,7 @@ module ejs {
 
         /**
             File extension portion of the path. The file extension is the portion after (and not including) the last ".".
+            Returns empty string if there is no extension
          */
         native function get extension(): String 
 
@@ -8871,13 +8888,15 @@ module ejs {
         /**
             Do Posix glob style file matching.
             @param patterns Pattern to match files. This can be a String, Path or array of String/Paths. 
+            If the Path is a directory, then files that match the specified patterns are returned.
+            If the Path is not a directory, then the path itself is matched against the pattern.
             The wildcard '?' matches any single character, '*' matches zero or more characters in a filename or 
                 directory, '** /' matches zero or more files or directories and matches recursively in a directory
                 tree.  If a pattern terminates with "/" it will only match directories. 
                 The pattern '**' is equivalent to '** / *' (ignore spaces). 
                 The Posix "[]" and "{a,b}" style expressions are not supported.
             @param options Optional properties to control the matching.
-            @option depthFirst Do a depth first traversal. If "dirs" is specified, the directories will be shown after
+            @option depthFirst Do a depth first traversal of directories. If true, then the directories will be shown after
                 the files in the directory. Otherwise, directories will be listed first.
             @option exclude Regular expression pattern of files to exclude from the results. Matches the entire path.
                 Only for the purpose of this match, directories will have "/" appended. To exclude directories in the
@@ -8890,7 +8909,7 @@ module ejs {
                 by throwing an exception. Set to any non-null value to be used in the results when there are no matching
                 files or directories. Set to the empty string to use the patterns in the results and set
                 to null to do nothing.
-            @option relative Return paths relative to the Path, otherwise result entries include the Path. Defaults to false.
+            @option relative Return matching files relative to the Path, otherwise results include the Path. Defaults to false.
             @return An Array of Path objects for each file in the directory.
          */
         native function files(patterns: Object! = '*', options: Object? = null): Array 
@@ -9330,11 +9349,9 @@ module ejs {
         native function same(other: Object): Boolean
 
         /**
-            The path separator for this path. This will return the first valid path separator used by the path
-            or the default file system path separator if the path has no separators. On Windows, a path may contain
-            "/" and "\" separators.  This will be set to a string containing the first separator found in the path.
-            Will typically be either "/" or "/\\" depending on the path, platform and file system.
-            Use $natural, $portable or $windows to create a new path with different path separators.
+            The path separator for this path. This will return the first path separator used by the path
+            or the default file system path separator if the path has no separators. On Windows, a path may use
+            "/" or "\" separators. Use $natural, $portable or $windows to create a new path with different path separators.
          */
         native function get separator(): String
 
@@ -9825,6 +9842,7 @@ module ejs {
             Create a regular expression object that can be used to process strings.
             @param pattern The pattern to associated with this regular expression.
             @param flags "g" for global match, "i" to ignore case, "m" match over multiple lines, "y" for sticky match.
+                "s" so that "." will match all characters.
          */
         native function RegExp(pattern: String, flags: String? = null)
 
@@ -10521,6 +10539,7 @@ module ejs {
          */
         native function remove(start: Number, end: Number = -1): String
 
+        //  TODO - need options to do a global replace when pattern is a string
         /**
             Search and replace. Search for the given pattern which can be either a string or a regular expression 
             and replace it with the replace text. If the pattern is a string, only the first occurrence is replaced.
@@ -16393,10 +16412,21 @@ module ejs.template  {
                         }
                         pos++
                         c = script[pos++]
-                        while (c.isAlpha || c.isDigit || c == '[' || c == ']' || c == '.' || c == '$' || c == '_' || 
-                                c == "'") {
-                            token.write(c)
+                        if (c == '{') {
                             c = script[pos++]
+                            while (c && c != '}') {
+                                token.write(c)
+                                c = script[pos++]
+                            }
+                            if (c == '}') {
+                                pos++;
+                            }
+                        } else {
+                            while (c.isAlpha || c.isDigit || c == '[' || c == ']' || c == '.' || c == '$' || c == '_' || 
+                                    c == "'") {
+                                token.write(c)
+                                c = script[pos++]
+                            }
                         }
                         pos--
                         return Token.Var
@@ -16411,9 +16441,21 @@ module ejs.template  {
                     tid = Token.Literal
                     break
 
+                case "\\":
+                    if (script[pos] == '@') {
+                        token.write('@')
+                        pos++
+                    } else if (script[pos] == '<' && script[pos+1] == '%') {
+                        token.write('<%')
+                        pos += 2
+                    } else {
+                        token.write('\\')
+                        token.write(c)
+                    }
+                    break
+
                 default:
-                    //  TODO - triple quotes would eliminate the need for this
-                    if (c == '\"' || c == '\\') {
+                    if (c == '\"') {
                         token.write('\\')
                     }
                     token.write(c)
@@ -16526,6 +16568,7 @@ module ejs.unix {
         @param options Processing and file attributes
         @options owner String representing the file owner                                                     
         @options group String representing the file group                                                     
+        @options exceptions Set to false to disable exceptions if cp finds no files to copy. Defaults to true.
         @options permissions Number File Posix permissions mask
         @options tree Copy the src subtree and preserve the directory structure under the destination.
         @return Number of files copied
@@ -16539,11 +16582,18 @@ module ejs.unix {
                 base = pattern
                 pattern = Path('**')
                 options = blend({tree: true, relative: true}, options)
+
+            } else if (options.tree) {
+                base = pattern.dirname
+                pattern = pattern.basename
+                options.relative = true
             }
             list = base.files(pattern, options)
 
             if (!list || list.length == 0) {
-                throw 'cp: Cannot find files to copy "' + pattern + '" to ' + dest
+                if (options.exceptions !== false) {
+                    throw 'cp: Cannot find files to copy "' + pattern + '" to ' + dest
+                }
             }
             destIsDir = (dest.isDir || list.length > 1 || dest.name.endsWith('/'))
 
@@ -16567,6 +16617,7 @@ module ejs.unix {
         }
         return count
     }
+
     /**
         Get the directory name portion of a file. The dirname name portion is the leading portion including all 
         directory elements and excluding the base name. On some systems, it will include a drive specifier.
@@ -17366,7 +17417,7 @@ module ejs.web {
                         response = "action"::missing()
                     }
                 } else {
-                    App.log.debug(4, "Run action " + actionName)
+                    App.log.debug(5, "Run action " + actionName)
                     response = (ns)::[actionName]()
                 }
                 if (response && !response.body) {
@@ -17747,7 +17798,7 @@ module ejs.web {
             @option layout Optional layout template. Defaults to config.dirs.layouts/default.ejs.
          */
         function writeTemplate(path: Path, options: Object = {}): Void {
-            log.debug(4, "writeTemplate: \"" + path + "\"")
+            log.debug(5, "writeTemplate: \"" + path + "\"")
             let saveFilename = request.filename
             request.filename = path
             request.setHeader("Content-Type", "text/html")
@@ -17766,7 +17817,7 @@ module ejs.web {
             @option layout Path layout template. Defaults to config.dirs.layouts/default.ejs.
          */
         function writeTemplateLiteral(page: String, options: Object = {}): Void {
-            log.debug(4, "writeTemplateLiteral")
+            log.debug(5, "writeTemplateLiteral")
             request.setHeader("Content-Type", "text/html")
             if (options.layout === undefined) {
                 options.layout = config.dirs.layouts.join(config.web.views.layout)
@@ -18026,14 +18077,14 @@ module ejs.web {
 /************************************************************************/
 
 /*
-    Dir.es - Directory content handler
+    Dir.es - Directory redirection handler
  */
 
 # Config.WEB
 module ejs.web {
 
     /** 
-        Directory content handler. This redirects requests for directories and serves directory index files.
+        Directory redirection handler. This redirects requests for directories and serves directory index files.
         If the request pathInfo ends with "/", the request is transparently redirected to an index file if one is present.
         The set of index files is defined by HttpServer.indicies. If the request is a directory but does not end in "/",
         the client is redirected to a URL equal to the pathInfo with a "/" appended.
@@ -19450,11 +19501,12 @@ server.listen("127.0.0.1:7777")
                 }
             }
             activeWorkers.push(w)
-            App.log.debug(4, "HttpServer.getWorker idle: " + idleWorkers.length + " active:" + activeWorkers.length)
+            App.log.debug(5, "HttpServer.getWorker idle: " + idleWorkers.length + " active:" + activeWorkers.length)
             return w
         }
 
         //  TODO - should take an array of endpoints (like GoAhead) and allow https:///
+        //  TODO - Should not throw
 
         /** 
             Listen for client connections. This creates a HTTP server listening on a single socket endpoint. It can
@@ -19520,7 +19572,6 @@ server.listen("127.0.0.1:7777")
             @param app Web application function 
          */
         function process(app: Function, request: Request, finalize: Boolean = true): Void {
-// let mark = new Date
             request.config = config
             try {
                 if (request.route && request.route.middleware) {
@@ -19561,7 +19612,6 @@ server.listen("127.0.0.1:7777")
                 App.log.debug(1, e)
                 request.writeError(Http.ServerError, e)
             }
-// App.log.debug(2, "LEAVE PROCESSING  " + mark.elapsed + " msec for " + request.uri)
         }
 
         private function processBody(request: Request, body: Object): Void {
@@ -19648,7 +19698,7 @@ server.listen("127.0.0.1:7777")
             if (config.cache.workers.enable) {
                 idleWorkers.push(w)
             }
-            App.log.debug(4, "HttpServer.releaseWorker idle: " + idleWorkers.length + " active:" + activeWorkers.length)
+            App.log.debug(5, "HttpServer.releaseWorker idle: " + idleWorkers.length + " active:" + activeWorkers.length)
         }
 
         /** 
@@ -19698,7 +19748,7 @@ server.listen("127.0.0.1:7777")
                     }
                     request.on("close", function() {
                         releaseWorker(w) 
-                        App.log.debug(3, "Elapsed " + request.mark.elapsed + " msec for " + request.uri)
+                        App.log.debug(5, "Elapsed " + request.mark.elapsed + " msec for " + request.uri)
                     })
                     passRequest(request, w)
                     /* Must not touch request from here on - the worker owns it now */
@@ -19706,7 +19756,7 @@ server.listen("127.0.0.1:7777")
                     //  TODO - rename response => responder
                     let mark = new Date
                     process(route.response, request)
-                    App.log.debug(3, "Elapsed " + mark.elapsed + " msec for " + request.uri)
+                    App.log.debug(5, "Elapsed " + mark.elapsed + " msec for " + request.uri)
                 }
             } catch (e) {
                 let status = request.status != Http.Ok ? request.status : Http.ServerError
@@ -20014,7 +20064,7 @@ module ejs.web {
           */
         public static function load(request: Request?, dir: Path = ".", config = App.config): Mvc {
             if ((mvc = Mvc.apps[dir]) == null) {
-                App.log.debug(2, "Load MVC application from \"" + dir + "\"")
+                App.log.debug(5, "Load MVC application from \"" + dir + "\"")
                 mvc = Mvc.apps[dir] = new Mvc(dir, config)
                 let appmod = config.dirs.cache.join(config.mvc.appmod)
 
@@ -20051,7 +20101,7 @@ module ejs.web {
             } else {
                 let ext = config.extensions
                 let dir = request.dir
-                request.log.debug(4, "MVC init at \"" + dir + "\"")
+                request.log.debug(5, "MVC init at \"" + dir + "\"")
 
                 /* Load App. Touch ejsrc triggers a complete reload */
                 let files, deps
@@ -20106,11 +20156,11 @@ module ejs.web {
                 request.log.debug(4, "Mvc.loadComponent: component already loaded: " + mod)
             } else {
                 try {
-                    request.log.debug(4, "Mvc.loadComponent: load component : " + mod)
+                    request.log.debug(5, "Mvc.loadComponent: load component : " + mod)
                     global.load(mod)
                     loaded[mod] = new Date
                 } catch (e) {
-                    request.log.debug(4, "Mvc.loadComponent: Load failed, rebuild component: " + mod)
+                    request.log.debug(5, "Mvc.loadComponent: Load failed, rebuild component: " + mod)
                     rebuildComponent(request, mod, files)
                 }
             }
@@ -20153,7 +20203,7 @@ module ejs.web {
                 }
                 code += path.readString()
             }
-            request.log.debug(4, "Rebuild component: " + mod + " files: " + files)
+            request.log.debug(5, "Rebuild component: " + mod + " files: " + files)
             eval(code, mod)
         }
 
@@ -21007,7 +21057,7 @@ r.link({product: "candy", quantity: "10", template: "/cart/{product}/{quantity}}
          */
         function setHeaders(headers: Object, overwrite: Boolean = true): Void {
             for (let [key,value] in headers) {
-                setHeader(key, value, overwrite)
+                setHeader(key, value || '', overwrite)
             }
         }
 
@@ -21189,7 +21239,7 @@ TODO - DEBUG
                     } catch {}
                 }
                 finalize()
-                log.debug(4, "Request error (" + status + ") for: \"" + uri + "\". " + msg)
+                log.debug(5, "Request error (" + status + ") for: \"" + uri + "\". " + msg)
             }
         }
 
@@ -21562,6 +21612,8 @@ module ejs.web {
          */ 
         public static const Top: String = "top"
 
+        public static const WebSite: String = "webSite"
+
         /**
             Max calls to route() per request
          */
@@ -21757,6 +21809,11 @@ module ejs.web {
                 addRestful()
                 addCatchall()
                 break
+            case WebSite:
+                add(/\.es$/i,  {name: "es",  response: ScriptApp, method: "*"})
+                add(/\.ejs$/i, {name: "ejs", module: "ejs.template", response: TemplateApp, method: "*"})
+                add(isDir,    {name: "dir", response: DirApp})
+                addCatchall()
             case null:
                 break
             default:
@@ -21926,7 +21983,7 @@ module ejs.web {
                 r.initialized = true
             }
             if (log.level >= 3) {
-                log.debug(4, "Matched route \"" + r.routeSetName + "/" + r.name + "\"")
+                log.debug(5, "Matched route \"" + r.routeSetName + "/" + r.name + "\"")
                 if (log.level >= 5) {
                     log.debug(5, "  Route params " + serialize(params, {pretty: true}))
                 }
@@ -22710,9 +22767,10 @@ module ejs.web {
         let filename = request.filename
         let status = Http.Ok, body
         let hdr
-
-        let headers = {
-            "Content-Type": Uri(request.uri).mimeType,
+        let headers = {}
+        let type = Uri(request.uri).mimeType
+        if (type) {
+            headers['Content-Type'] = type
         }
         if (request.method != "PUT") {
             if ((encoding = request.header("Accept-Encoding")) && encoding.contains("gzip")) {
@@ -22735,7 +22793,6 @@ module ejs.web {
             headers["ETag"] = etag
             headers["Last-Modified"] = filename.modified.toUTCString()
         }
-
         /*
             If a specified tag matches, then return the full resource
          */
@@ -22761,10 +22818,6 @@ module ejs.web {
                     match = false
                 }
             }
-            if (!match) {
-                status = Http.PrecondFailed
-                /* Keep going to allow If-Modified-Since to be analysed */
-            }
         }
 
         /*
@@ -22778,7 +22831,9 @@ module ejs.web {
             }
         }
         if (when = request.header("If-Unmodified-Since")) {
-            if (!filename.exists || Date.parse(when) < filename.modified) {
+            if (!filename.exists) {
+                status = Http.NotFound
+            } else if (Date.parse(when) < filename.modified) {
                 status = Http.PrecondFailed
             }
         }

@@ -4,7 +4,7 @@
 
 Me.load({
     scripts: {
-        loaded: "
+        loaded: `
             if (me.generating) {
                 me.settings.webUser = '$(WEB_USER)'
                 me.settings.webGroup = '$(WEB_GROUP)'
@@ -12,13 +12,13 @@ Me.load({
                 me.settings.webUser = getWebUser()
                 me.settings.webGroup = getWebGroup()
             }
-        ",
-        gencustom: "
+        `,
+        gencustom: `
             if (me.platform.os != 'windows') {
                 genWriteLine(\"WEB_USER    = $(shell egrep 'www-data|_www|nobody' /etc/passwd | sed 's/:.*$$//' |  tail -1)\")
                 genWriteLine(\"WEB_GROUP   = $(shell egrep 'www-data|_www|nobody|nogroup' /etc/group | sed 's/:.*$$//' |  tail -1)\")
             }
-        ",
+        `,
     },
 
     manifest: {
@@ -357,7 +357,7 @@ Me.load({
                 ifdef:      'ejs',
 
             },{
-                from:        'doc/man/*.1',
+                from:        'doc/public/man/*.1',
                 to:          '${adoc}/man1/',
                 set:         'doc',
                 enable:      "me.platform.like == 'unix'",
@@ -446,14 +446,6 @@ Me.load({
                 header:     '#include \"appweb.h\"\n\n#if ME_COM_APPWEB',
                 footer:     '#endif /* ME_COM_APPWEB */',
                 title:      '${settings.title} Library Source',
-                set:        'pak',
-            },{
-                from:       ['src/utils/authpass.c'], 
-                to:         '${src}/authpass.c',
-                cat:        true,
-                filter:     /^#inc.*appweb.*$|^#inc.*esp.*$|^#inc.*customize.*$/mg,
-                header:     '#include \"appweb.h\"\n\n#if ME_COM_APPWEB',
-                footer:     '#endif /* ME_COM_APPWEB */',
                 set:        'pak',
             },
         ],

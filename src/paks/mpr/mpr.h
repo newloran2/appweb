@@ -1564,6 +1564,7 @@ PUBLIC void mprCheckBlock(MprMem *bp);
 /*
     Internal APIs
  */
+PUBLIC void mprDestroyMemService();
 PUBLIC void mprStartGCService();
 PUBLIC void mprStopGCService();
 PUBLIC void *mprAllocFast(size_t usize);
@@ -3111,9 +3112,7 @@ PUBLIC ssize mprPutFmtToWideBuf(MprBuf *buf, cchar *fmt, ...) PRINTF_ATTRIBUTE(2
 /**
     Date for use in log files (compact)
  */
-#define MPR_LOG_DATE     "%D %T"
-// #define MPR_LOG_DATE     "%T-%F"
-// #define MPR_LOG_DATE        "%b %e %T"
+#define MPR_LOG_DATE        "%D %T"
 
 /********************************** Defines ***********************************/
 /**
@@ -5155,7 +5154,8 @@ PUBLIC char *mprGetPortablePath(cchar *path);
 
 /**
     Get a relative path
-    @description Get a relative path path from an origin path to a destination.
+    @description Get a relative path path from an origin path to a destination. If a relative path cannot be obtained,
+        an absolute path to the destination will be returned. This happens if the paths cross drives.
     @param dest Destination file
     @param origin Starting location from which to compute a relative path to the destination
         If the origin is null, use the application's current working directory as the origin.
@@ -6146,7 +6146,6 @@ PUBLIC int mprStopDispatcher(MprDispatcher *dispatcher);
 /* Internal API */
 PUBLIC MprEvent *mprCreateEventQueue();
 PUBLIC MprEventService *mprCreateEventService();
-PUBLIC void mprDestroyEventService();
 PUBLIC void mprDedicateWorkerToDispatcher(MprDispatcher *dispatcher, struct MprWorker *worker);
 PUBLIC void mprDequeueEvent(MprEvent *event);
 PUBLIC bool mprDispatcherHasEvents(MprDispatcher *dispatcher);
@@ -7108,8 +7107,7 @@ typedef struct MprWaitService {
  */
 PUBLIC MprWaitService *mprCreateWaitService();
 PUBLIC void mprTermOsWait(MprWaitService *ws);
-PUBLIC int  mprStartWaitService(MprWaitService *ws);
-PUBLIC int  mprStopWaitService(MprWaitService *ws);
+PUBLIC void mprStopWaitService();
 PUBLIC void mprSetWaitServiceThread(MprWaitService *ws, MprThread *thread);
 PUBLIC void mprWakeNotifier();
 #if MPR_EVENT_ASYNC
@@ -9486,6 +9484,7 @@ PUBLIC int mprSetMimeProgram(MprHash *table, cchar *mimeType, cchar *program);
 #define MPR_LOG_CONFIG      0x2         /**< Show the configuration at the start of the log */
 #define MPR_LOG_CMDLINE     0x4         /**< Command line log switch uses */
 #define MPR_LOG_DETAILED    0x8         /**< Use detailed log formatting with timestamps and tags */
+#define MPR_NOT_ALL         0x10        /**< Don't invoke all destructors when terminating */
 
 typedef bool (*MprIdleCallback)(bool traceRequests);
 
@@ -9702,8 +9701,8 @@ PUBLIC int mprDaemon();
     \n\n
     Applications that have a service events thread can call mprDestroy directly from their main program when ready to exit.
     Applications that call mprServiceEvents from their main program will typically have some other MPR thread call
-    #mprShutdown to initiate a shutdown sequence. This will stop accepting new requests or connections and when the application
-    is idle, the #mprServiceEvents routine will return and then the main program can call then call mprDestroy.
+    #mprShutdown to initiate a shutdown sequence. This will stop accepting new requests or connections and when the 
+    application is idle, the #mprServiceEvents routine will return and then the main program can call then call mprDestroy.
     \n\n
     Once the shutdown conditions are satisfied, a thread executing #mprServiceEvents will return from that API and then
     the application should call #mprDestroy and exit().

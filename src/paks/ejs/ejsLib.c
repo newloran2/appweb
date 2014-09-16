@@ -9916,8 +9916,11 @@ static int finalizeToken(EcToken *tp)
 
 static int addCharToToken(EcToken *tp, int c)
 {
+    ssize   boost;
+    
     if (tp->length >= (tp->size - 1)) {
-        tp->size += EC_TOKEN_INCR;
+        boost = max(tp->size, EC_TOKEN_INCR);
+        tp->size += (int) boost;
         if ((tp->text = mprRealloc(tp->text, tp->size * sizeof(wchar))) == 0) {
             return MPR_ERR_MEMORY;
         }
@@ -15766,21 +15769,22 @@ static EcNode *parseNullableTypeExpression(EcCompiler *cp)
         break;
 
     default:
-        np = parseTypeExpression(cp);
-        if (peekToken(cp) == T_QUERY) {
-            /* Allow Nulls */
-            getToken(cp);
-        } else if (cp->peekToken->tokenId == T_LOGICAL_NOT) {
-            /* Don't allow nulls */
-            getToken(cp);
-            np->attributes |= EJS_TRAIT_THROW_NULLS;
-        } else if (cp->peekToken->tokenId == T_TILDE) {
-            /* Cast nulls to type */
-            getToken(cp);
-            np->attributes |= EJS_TRAIT_CAST_NULLS;
-        } else {
-            /* Default is same as Type! */
-            np->attributes |= EJS_TRAIT_THROW_NULLS;
+        if ((np = parseTypeExpression(cp)) != 0) {
+            if (peekToken(cp) == T_QUERY) {
+                /* Allow Nulls */
+                getToken(cp);
+            } else if (cp->peekToken->tokenId == T_LOGICAL_NOT) {
+                /* Don't allow nulls */
+                getToken(cp);
+                np->attributes |= EJS_TRAIT_THROW_NULLS;
+            } else if (cp->peekToken->tokenId == T_TILDE) {
+                /* Cast nulls to type */
+                getToken(cp);
+                np->attributes |= EJS_TRAIT_CAST_NULLS;
+            } else {
+                /* Default is same as Type! */
+                np->attributes |= EJS_TRAIT_THROW_NULLS;
+            }
         }
         break;
     }
@@ -30991,11 +30995,13 @@ static int parseOptions(Ejs *ejs, EjsCmd *cmd)
     cmd->throw = 0;    
     flags = MPR_CMD_IN | MPR_CMD_OUT | MPR_CMD_ERR;
     if (cmd->options) {
+#if DEPRECATE || 1
         if ((value = ejsGetPropertyByName(ejs, cmd->options, EN("noio"))) != 0) {
             if (value == ESV(true)) {
                 flags &= ~(MPR_CMD_OUT | MPR_CMD_ERR);
             }
         }
+#endif
         if ((value = ejsGetPropertyByName(ejs, cmd->options, EN("detach"))) != 0) {
             if (value == ESV(true)) {
                 flags |= MPR_CMD_DETACH;
@@ -31007,7 +31013,7 @@ static int parseOptions(Ejs *ejs, EjsCmd *cmd)
                 mprSetCmdDir(cmd->mc, path->value);
             }
         }
-        if ((value = ejsGetPropertyByName(ejs, cmd->options, EN("exception"))) != 0) {
+        if ((value = ejsGetPropertyByName(ejs, cmd->options, EN("exceptions"))) != 0) {
             if (value == ESV(true)) {
                 cmd->throw = 1;
             }
@@ -31117,7 +31123,7 @@ static EjsObj *cmd_start(Ejs *ejs, EjsCmd *cmd, int argc, EjsObj **argv)
         if (cmd->throw) {
             status = mprGetCmdExitStatus(cmd->mc);
             if (status != 0) {
-                ejsThrowIOError(ejs, "Command failed status %d, %@", status, ejsToString(ejs, cmd->error));
+                ejsThrowIOError(ejs, "Command failed status %d\n%@", status, ejsToString(ejs, cmd->error));
             }
         }
     }
@@ -37623,7 +37629,6 @@ Token getNextJsonToken(MprBuf *buf, wchar **token, JsonState *js)
     } else if (*cp == '}' || *cp == ']') {
         tid = *cp == '}' ? TOK_RBRACE: TOK_RBRACKET;
         while (*++cp && isspace((uchar) *cp)) ;
-#if NEW || 1
         /*
             Detect missing comma after closing brace/bracket
          */
@@ -37631,14 +37636,13 @@ Token getNextJsonToken(MprBuf *buf, wchar **token, JsonState *js)
             js->error = cp;
             return TOK_ERR;
         }
-#endif
         if (*cp == ',' || *cp == ':') {
             cp++;
         }
         next = cp;
 
     } else {
-        if (*cp == '"' || *cp == '\'') {
+        if (*cp == '"' || *cp == '\'' || *cp == '`') {
             tid = TOK_QID;
             quote = *cp++;
             for (start = cp; cp < end; cp++) {
@@ -42073,7 +42077,6 @@ PUBLIC EjsArray *ejsGetPathFiles(Ejs *ejs, EjsPath *fp, int argc, EjsObj **argv)
     } else {
         patterns = (EjsArray*) argv[0];
     }
-
     if (options) {
         if (ejsGetPropertyByName(ejs, options, EN("depthFirst")) == ESV(true)) {
             flags |= FILES_DEPTH_FIRST;
@@ -42114,31 +42117,24 @@ PUBLIC EjsArray *ejsGetPathFiles(Ejs *ejs, EjsPath *fp, int argc, EjsObj **argv)
         pattern = ejsToMulti(ejs, ejsGetItem(ejs, patterns, i));
         path = fp->value;
         base = "";
-
-#if UNUSED
-        if (mprIsPathAbs(pattern)) {
-#endif
-            start = pattern;
-            if ((special = strpbrk(start, "*?")) != 0) {
-                if (special > start) {
-                    for (pattern = special; pattern > start && !strchr(fs->separators, *pattern); pattern--) { }
-                    if (pattern > start) {
-                        *pattern++ = '\0';
-                        path = mprJoinPath(path, start);
-                        base = start;
-                    }
-                }
-            } else {
-                pattern = (char*) mprGetPathBaseRef(start);
+        start = pattern;
+        if ((special = strpbrk(start, "*?")) != 0) {
+            if (special > start) {
+                for (pattern = special; pattern > start && !strchr(fs->separators, *pattern); pattern--) { }
                 if (pattern > start) {
-                    pattern[-1] = '\0';
+                    *pattern++ = '\0';
                     path = mprJoinPath(path, start);
                     base = start;
                 }
             }
-#if UNUSED
+        } else {
+            pattern = (char*) mprGetPathBaseRef(start);
+            if (pattern > start) {
+                pattern[-1] = '\0';
+                path = mprJoinPath(path, start);
+                base = start;
+            }
         }
-#endif
         if (!globPath(ejs, result, path, base, pattern, flags, exclude, include)) {
             return 0;
         }
@@ -42170,9 +42166,8 @@ PUBLIC EjsArray *ejsGetPathFiles(Ejs *ejs, EjsPath *fp, int argc, EjsObj **argv)
 static int globMatch(Ejs *ejs, cchar *s, cchar *pat, int isDir, int flags, cchar *seps, int count, cchar **nextPartPattern)
 {
     int     match;
-//  TODO - need recursion limits
-    *nextPartPattern = 0;
 
+    *nextPartPattern = 0;
     while (*s && *pat && *pat != seps[0] && *pat != seps[1]) {
         match = (flags & FILES_CASELESS) ? (*pat == *s) : (tolower((uchar) *pat) == tolower((uchar) *s));
         if (match || *pat == '?') {
@@ -42185,6 +42180,14 @@ static int globMatch(Ejs *ejs, cchar *s, cchar *pat, int isDir, int flags, cchar
             if (*pat == '*') {
                 /* Double star - matches zero or more directories */
                 if (isDir) {
+                    /*
+                        Check if next segment matches and match that
+                     */
+                    if (pat[1] == seps[0] || pat[1] == seps[1]) {
+                        if (globMatch(ejs, s, &pat[2], isDir, flags, seps, count, nextPartPattern)) {
+                            return 1;
+                        }
+                    }
                     *nextPartPattern = pat - 1;
                     return 1;
                 }
@@ -42252,6 +42255,7 @@ static EjsArray *globPath(Ejs *ejs, EjsArray *results, cchar *path, cchar *base,
     MprList         *list;
     cchar           *filename, *nextPartPattern, *nextPath, *matchFile;
     int             next, add;
+
 
     if ((list = mprGetPathFiles(path, flags | MPR_PATH_RELATIVE)) == 0) {
         if (flags & FILES_NOMATCH_EXC) {
@@ -42487,27 +42491,37 @@ static void getUserGroup(Ejs *ejs, EjsObj *attributes, int *uid, int *gid)
     struct passwd   *pp;
     struct group    *gp;
 
+    assert(uid);
+    assert(gid);
+
     *uid = *gid = -1;
     if ((vp = ejsGetPropertyByName(ejs, attributes, EN("group"))) != 0 && ejsIsDefined(ejs, vp)) {
         vp = ejsToString(ejs, vp);
-        //  TODO - these are thread-safe on mac, but not on all systems. use getgrnam_r
-        if ((gp = getgrnam(ejsToMulti(ejs, vp))) == 0) {
-            ejsThrowArgError(ejs, "Cannot find group %@", vp);
-            return;
+        if (ejsIs(ejs, vp, Number)) {
+            *gid = ejsGetInt(ejs, vp);
+        } else {
+            if ((gp = getgrnam(ejsToMulti(ejs, vp))) == 0) {
+                ejsThrowArgError(ejs, "Cannot find group %@", vp);
+                return;
+            }
+            *gid = gp->gr_gid;
         }
-        *gid = gp->gr_gid;
-
     } else if ((vp = ejsGetPropertyByName(ejs, attributes, EN("gid"))) != 0 && ejsIsDefined(ejs, vp)) {
         if (ejsIs(ejs, vp, Number)) {
             *gid = ejsGetInt(ejs, vp);
         }
     }
+
     if ((vp = ejsGetPropertyByName(ejs, attributes, EN("user"))) != 0 && ejsIsDefined(ejs, vp)) {
-        if ((pp = getpwnam(ejsToMulti(ejs, vp))) == 0) {
-            ejsThrowArgError(ejs, "Cannot find user %@", vp);
-            return;
+        if (ejsIs(ejs, vp, Number)) {
+            *uid = ejsGetInt(ejs, vp);
+        } else {
+            if ((pp = getpwnam(ejsToMulti(ejs, vp))) == 0) {
+                ejsThrowArgError(ejs, "Cannot find user %@", vp);
+                return;
+            }
+            *uid = pp->pw_uid;
         }
-        *uid = pp->pw_uid;
     } else if ((vp = ejsGetPropertyByName(ejs, attributes, EN("uid"))) != 0 && ejsIsDefined(ejs, vp)) {
         if (ejsIs(ejs, vp, Number)) {
             *uid = ejsGetInt(ejs, vp);
@@ -51639,8 +51653,8 @@ static void onWebSocketEvent(EjsWebSocket *ws, int event, EjsAny *data, HttpPack
     case HTTP_EVENT_APP_CLOSE:
         eventName = "complete";
         slot = ES_WebSocket_onclose;
-        status = rx ? rx->webSocket->closeStatus: WS_STATUS_COMMS_ERROR;
-        reason = rx ? rx->webSocket->closeReason: 0;
+        status = (rx && rx->webSocket) ? rx->webSocket->closeStatus: WS_STATUS_COMMS_ERROR;
+        reason = (rx && rx->webSocket) ? rx->webSocket->closeReason: ws->conn->errorMsg;
         ejsSetPropertyByName(ejs, eobj, EN("code"), ejsCreateNumber(ejs, status));
         ejsSetPropertyByName(ejs, eobj, EN("reason"), ejsCreateStringFromAsc(ejs, reason));
         ejsSetPropertyByName(ejs, eobj, EN("wasClean"), ejsCreateBoolean(ejs, status != WS_STATUS_COMMS_ERROR));
@@ -55861,11 +55875,13 @@ static EjsVoid *hs_listen(Ejs *ejs, EjsHttpServer *sp, int argc, EjsObj **argv)
         host = httpCreateHost(NULL);
         httpSetHostName(host, sfmt("%s:%d", sp->ip, sp->port));
         route = httpCreateConfiguredRoute(host, 1);
+
         httpAddRouteMethods(route, "DELETE, HEAD, OPTIONS, PUT");
         httpSetRouteName(route, "default");
         httpAddRouteHandler(route, "ejsHandler", "");
         httpSetRouteTarget(route, "run", 0);
         httpFinalizeRoute(route);
+
         httpSetHostDefaultRoute(host, route);
         httpAddHostToEndpoint(endpoint, host);
 
@@ -56496,7 +56512,7 @@ static EjsHttpServer *createHttpServer(Ejs *ejs, EjsType *type, int size)
     sp->ejs = ejs;
     sp->hosted = ejs->hosted;
     sp->async = 1;
-    sp->trace = httpCreateTrace(0);
+    sp->trace = httpCreateTrace(HTTP->trace);
     return sp;
 }
 
@@ -56816,10 +56832,9 @@ static EjsObj *createEnv(Ejs *ejs, EjsRequest *req)
 
 static EjsObj *createFiles(Ejs *ejs, EjsRequest *req)
 {
-    HttpUploadFile  *up;
+    HttpUploadFile  *uf;
     HttpConn        *conn;
     EjsObj          *files, *file;
-    MprKey          *kp;
     int             index;
 
     if (req->files == 0) {
@@ -56831,15 +56846,14 @@ static EjsObj *createFiles(Ejs *ejs, EjsRequest *req)
             return ESV(null);
         }
         req->files = files = (EjsObj*) ejsCreateEmptyPot(ejs);
-        for (index = 0, kp = 0; (kp = mprGetNextKey(conn->rx->files, kp)) != 0; index++) {
-            up = (HttpUploadFile*) kp->data;
+        for (ITERATE_ITEMS(conn->rx->files, uf, index)) {
             file = (EjsObj*) ejsCreateEmptyPot(ejs);
-            ejsSetPropertyByName(ejs, file, EN("filename"), ejsCreatePathFromAsc(ejs, up->filename));
-            ejsSetPropertyByName(ejs, file, EN("clientFilename"), ejsCreateStringFromAsc(ejs, up->clientFilename));
-            ejsSetPropertyByName(ejs, file, EN("contentType"), ejsCreateStringFromAsc(ejs, up->contentType));
-            ejsSetPropertyByName(ejs, file, EN("name"), ejsCreateStringFromAsc(ejs, kp->key));
-            ejsSetPropertyByName(ejs, file, EN("size"), ejsCreateNumber(ejs, (MprNumber) up->size));
-            ejsSetPropertyByName(ejs, files, EN(kp->key), file);
+            ejsSetPropertyByName(ejs, file, EN("filename"), ejsCreatePathFromAsc(ejs, uf->filename));
+            ejsSetPropertyByName(ejs, file, EN("clientFilename"), ejsCreateStringFromAsc(ejs, uf->clientFilename));
+            ejsSetPropertyByName(ejs, file, EN("contentType"), ejsCreateStringFromAsc(ejs, uf->contentType));
+            ejsSetPropertyByName(ejs, file, EN("name"), ejsCreateStringFromAsc(ejs, uf->name));
+            ejsSetPropertyByName(ejs, file, EN("size"), ejsCreateNumber(ejs, (MprNumber) uf->size));
+            ejsSetPropertyByName(ejs, files, EN(uf->name), file);
         }
     }
     return (EjsObj*) req->files;
@@ -64451,8 +64465,8 @@ static int initializeModule(Ejs *ejs, EjsModule *mp)
                 return MPR_ERR_CANT_INITIALIZE;
             }
             if (!(ejs->flags & EJS_FLAG_NO_INIT)) {
-                if (nativeModule->checksum != mp->checksum) {
-                    ejsThrowIOError(ejs, "Module \"%s\" XXX does not match native code (%d, %d)", mp->path, 
+                if (mp->checksum != 0 && nativeModule->checksum != mp->checksum) {
+                    ejsThrowIOError(ejs, "Module \"%s\" does not match native code (%d, %d)", mp->path,
                         nativeModule->checksum, mp->checksum);
                     return MPR_ERR_BAD_STATE;
                 }
@@ -67375,8 +67389,13 @@ Ejs *ejsCreateVM(int argc, cchar **argv, int flags)
     ejs->dontExit = sp->dontExit;
     ejs->flags |= (flags & (EJS_FLAG_NO_INIT | EJS_FLAG_DOC | EJS_FLAG_HOSTED));
     ejs->hosted = (flags & EJS_FLAG_HOSTED) ? 1 : 0;
-
     ejs->global = ejsCreateBlock(ejs, 0);
+
+    /*
+        Use conservative GC shutdown
+     */
+    MPR->flags |= MPR_NOT_ALL;
+
     mprSetName(ejs->global, "global");
     ejsDefineGlobalNamespaces(ejs);
 

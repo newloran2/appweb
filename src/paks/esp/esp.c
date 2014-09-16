@@ -643,7 +643,7 @@ static void initRuntime()
         app->platform = http->platform;
         httpSetPlatformDir(0);
     }
-    trace("Info", "Platform \"%s\"", http->platformDir);
+    vtrace("Info", "Platform \"%s\"", http->platformDir);
     if (!http->platformDir) {
         if (app->platform) {
             fail("Cannot find platform: \"%s\"", app->platform);
@@ -705,6 +705,10 @@ static void initialize(int argc, char **argv)
             route->update = 1;
             httpSetRouteShowErrors(route, 1);
             espSetDefaultDirs(route);
+#if FUTURE
+    Change client => documents
+    Add public
+#endif
             httpSetDir(route, "client", ".");
             httpAddRouteHandler(route, "espHandler", "esp");
             httpAddRouteIndex(route, "index.esp");
@@ -794,7 +798,7 @@ static void process(int argc, char **argv)
         user(argc - 1, &argv[1]);
 
     } else if (isdigit((uchar) *cmd)) {
-        run(0, NULL);
+        run(1, (char**) &cmd);
     }
 }
 
@@ -1285,6 +1289,7 @@ static void run(int argc, char **argv)
             httpAddHostToEndpoints(app->host);
         }
     }
+    httpSetInfoLevel(0);
     if (httpStartEndpoints() < 0) {
         mprLog("", 0, "Cannot start HTTP service, exiting.");
         return;
@@ -2029,6 +2034,9 @@ static void compileItems(HttpRoute *route)
         found++;
     }
 
+#if FUTURE
+    Change client => documents
+#endif
     if ((dir = httpGetDir(route, "client")) != 0) {
         app->files = mprGetPathFiles(dir, MPR_PATH_DESCEND | MPR_PATH_NODIRS);
         for (next = 0; (dp = mprGetNextItem(app->files, &next)) != 0 && !app->error; ) {
@@ -2108,6 +2116,9 @@ static void compileCombined(HttpRoute *route)
             mprAddItem(app->build, mprCreateKeyPair(path, "controller", 0));
         }
     }
+#if FUTURE
+    Change client => documents
+#endif
     app->files = mprGetPathFiles(httpGetDir(route, "client"), MPR_PATH_DESCEND);
     for (next = 0; (dp = mprGetNextItem(app->files, &next)) != 0 && !app->error; ) {
         path = dp->name;
@@ -2129,6 +2140,9 @@ static void compileCombined(HttpRoute *route)
         }
     }
    
+#if FUTURE
+    Change client => documents
+#endif
     if (!httpGetDir(route, "controllers") && !httpGetDir(route, "client")) {
         app->files = mprGetPathFiles(route->documents, MPR_PATH_DESCEND);
         for (next = 0; (dp = mprGetNextItem(app->files, &next)) != 0 && !app->error; ) {
@@ -2566,6 +2580,9 @@ static void uninstallPak(cchar *name)
         libDir = ESP_LIB_DIR;
     }
     if ((client = mprGetJson(app->config, "directories.client")) == 0) {
+#if FUTURE
+    Change client => documents
+#endif
         client = sjoin(mprGetPathBase(httpGetDir(app->route, "client")), "/", NULL);
     }
     libDir = strim(libDir, sjoin(client, "/", NULL), MPR_TRIM_START);
@@ -2752,7 +2769,7 @@ static MprJson *createPackage()
     MprJson     *config;
     
     config = mprParseJson(sfmt("{ name: '%s', title: '%s', description: '%s', version: '1.0.0', \
-        dependencies: {}, app: { http: {routes: 'esp-server'}}}",
+        dependencies: {}, import: true, app: { http: {routes: 'esp-server'}}}",
         app->appName, app->appName, app->appName));
     if (config == 0) {
         fail("Cannot create default package");
@@ -3114,7 +3131,7 @@ static void usageError()
     initRuntime();
     paks = getCachedPaks();
     if (paks) {
-        mprEprintf("  Local Paks: (See also http://embedthis.com/catalog)\n%s\n", paks);
+        mprEprintf("  Local Paks: (See also https://embedthis.com/catalog/)\n%s\n", paks);
     }
     app->error = 1;
 }

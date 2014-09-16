@@ -13,7 +13,7 @@
   </ItemDefinitionGroup>
 
   <PropertyGroup Label="Globals">
-    <ProjectGuid>{b878be55-becb-4c83-8e95-6ad11ba24206}</ProjectGuid>
+    <ProjectGuid>{3acd6101-a351-4c3a-81e4-dc8589fea4ef}</ProjectGuid>
     <RootNamespace />
     <Keyword>Win32Proj</Keyword>
   </PropertyGroup>
@@ -115,7 +115,7 @@
 
   <CustomBuildStep>
     <Command>cd ..\..\src\paks\mpr
-copy /Y mpr.h $(IncDir)
+copy /Y /B mpr.h $(IncDir)
 cd ..\..\..\projects\appweb-windows-static</Command>
     <Outputs>$(BinDir)\libmpr.lib</Outputs>
   </CustomBuildStep>

@@ -151,6 +151,7 @@ static void dummyManager(void *ptr, int flags);
 static void freeBlock(MprMem *mp);
 static void getSystemInfo();
 static MprMem *growHeap(size_t size);
+static void invokeAllDestructors();
 static ME_INLINE size_t qtosize(int qindex);
 static ME_INLINE bool linkBlock(MprMem *mp); 
 static ME_INLINE void linkSpareBlock(char *ptr, size_t size);
@@ -272,6 +273,26 @@ PUBLIC Mpr *mprCreateMemService(MprManager manager, int flags)
     heap->roots = mprCreateList(-1, MPR_LIST_STATIC_VALUES);
     mprAddRoot(MPR);
     return MPR;
+}
+
+
+/*
+    Destroy all allocated memory including the MPR itself
+ */
+PUBLIC void mprDestroyMemService()
+{
+    MprRegion   *region, *next;
+    ssize       size;
+
+    for (region = heap->regions; region; ) {
+        next = region->next;
+        mprVirtFree(region, region->size);
+        region = next;
+    }
+    size = MPR_PAGE_ALIGN(sizeof(MprHeap), memStats.pageSize);
+    mprVirtFree(heap, size);
+    MPR = 0;
+    heap = 0;
 }
 
 
@@ -908,6 +929,7 @@ PUBLIC void mprStopGCService()
     for (i = 0; heap->sweeper && i < MPR_TIMEOUT_STOP; i++) {
         mprNap(1);
     }
+    invokeAllDestructors();
 }
 
 
@@ -1274,6 +1296,34 @@ static void invokeDestructors()
             }
         }
     }
+}
+
+
+static void invokeAllDestructors()
+{
+#if FUTURE
+    MprRegion   *region;
+    MprMem      *mp;
+    MprManager  mgr;
+
+    if (MPR->flags & MPR_NOT_ALL) {
+        return;
+    }
+    for (region = heap->regions; region; region = region->next) {
+        for (mp = region->start; mp < region->end; mp = GET_NEXT(mp)) {
+            if (!mp->free && mp->hasManager) {
+                mgr = GET_MANAGER(mp);
+                if (mgr) {
+                    (mgr)(GET_PTR(mp), MPR_MANAGE_FREE);
+                    /* Retest incase the manager routine revied the object */
+                    if (mp->mark != heap->mark) {
+                        mp->hasManager = 0;
+                    }
+                }
+            }
+        }
+    }
+#endif
 }
 
 
@@ -2866,12 +2916,12 @@ PUBLIC bool mprDestroy()
      */
     while (MPR->eventing) {
         mprWakeNotifier();
-        mprWaitForCond(MPR->cond, 1000);
+        mprWaitForCond(MPR->cond, 10);
         if (mprGetRemainingTicks(MPR->shutdownStarted, timeout) <= 0) {
             break;
         }
     }
-    if (!mprIsIdle(0)) {
+    if (!mprIsIdle(0) || MPR->eventing) {
         if (MPR->exitStrategy & MPR_EXIT_SAFE) {
             /* Note: Pending outside events will pause GC which will make mprIsIdle return false */
             mprLog("warn mpr", 2, "Cancel termination due to continuing requests, application resumed.");
@@ -2902,7 +2952,9 @@ PUBLIC bool mprDestroy()
     mprStopWorkers();
     mprStopCmdService();
     mprStopModuleService();
-    mprDestroyEventService();
+    mprStopEventService();
+    mprStopThreadService();
+    mprStopWaitService();
 
     /*
         Run GC to finalize all memory until we are not freeing any memory. This IS deterministic.
@@ -2918,12 +2970,12 @@ PUBLIC bool mprDestroy()
     mprStopModuleService();
     mprStopSignalService();
     mprStopGCService();
-    mprStopThreadService();
     mprStopOsService();
 
     if (MPR->exitStrategy & MPR_EXIT_RESTART) {
         mprRestart();
     }
+    mprDestroyMemService();
     return 1;
 }
 
@@ -3601,6 +3653,7 @@ PUBLIC void mprManageAsync(MprWaitService *ws, int flags)
     if (flags & MPR_MANAGE_FREE) {
         if (ws->wclass) {
             mprDestroyWindowClass(ws->wclass);
+            ws->wclass = 0;
         }
     }
 }
@@ -9436,7 +9489,7 @@ static void destroyDispatcherQueue(MprDispatcher *q)
 }
 
 
-PUBLIC void mprDestroyEventService()
+PUBLIC void mprStopEventService()
 {
     MprEventService     *es;
         
@@ -9447,13 +9500,6 @@ PUBLIC void mprDestroyEventService()
     destroyDispatcherQueue(es->idleQ);
     destroyDispatcherQueue(es->pendingQ);
     es->mutex = 0;
-}
-
-
-PUBLIC void mprStopEventService()
-{
-    mprWakeDispatchers();
-    mprWakeNotifier();
 }
 
 
@@ -15740,7 +15786,6 @@ PUBLIC void mprLogConfig()
     mprLog(name, 2, "CPU:                %s", ME_CPU);
     mprLog(name, 2, "OS:                 %s", ME_OS);
     mprLog(name, 2, "Host:               %s", mprGetHostName());
-    mprLog(name, 2, "Directory:          %s", mprGetCurrentPath());
     mprLog(name, 2, "Configure:          %s", ME_CONFIG_CMD);
     mprLog(name, 2, "----------------------------------");
 }
@@ -15887,7 +15932,6 @@ PUBLIC void mprDefaultLogHandler(cchar *tags, int level, cchar *msg)
 {
     MprFile     *file;
     char        tbuf[128];
-    ssize       len, width;
     static int  check = 0;
 
     if ((file = MPR->logFile) == 0) {
@@ -15899,19 +15943,14 @@ PUBLIC void mprDefaultLogHandler(cchar *tags, int level, cchar *msg)
     if (MPR->flags & MPR_LOG_DETAILED && tags && *tags) {
         fmt(tbuf, sizeof(tbuf), "%s %d %s, ", mprGetDate(MPR_LOG_DATE), level, tags);
         mprWriteFileString(file, tbuf);
-        len = slen(tbuf);
-        width = 40;
-        if (len < width) {
-            mprWriteFile(file, "                                          ", width - len);
-        }
-    } else if (tags && level == 0) {
-        mprWriteFileString(file, "error: ");
     }
     mprWriteFileString(file, msg);
     mprWriteFileString(file, "\n");
+#if ME_MPR_OSLOG
     if (level == 0) {
         mprWriteToOsLog(sfmt("%s: %d %s: %s", MPR->name, level, tags, msg), level);
     }
+#endif
 }
 
 
@@ -18391,7 +18430,10 @@ PUBLIC char *mprGetRelPath(cchar *destArg, cchar *originArg)
             break;
         }
     }
-    assert(commonSegments >= 0);
+    if (commonSegments < 0) {
+        /* Different drives - must return absolute path */
+        return dest;
+    }
 
     if ((*op && *dp) || (*op && *dp && !isSep(fs, *op) && !isSep(fs, *dp))) {
         /*
@@ -18688,8 +18730,10 @@ PUBLIC int mprMakeDir(cchar *path, int perms, int owner, int group, bool makeMis
     }
     if (makeMissing && !isRoot(fs, path)) {
         parent = mprGetPathParent(path);
-        if ((rc = mprMakeDir(parent, perms, owner, group, makeMissing)) < 0) {
-            return rc;
+        if (!mprPathExists(parent, X_OK)) {
+            if ((rc = mprMakeDir(parent, perms, owner, group, makeMissing)) < 0) {
+                return rc;
+            }
         }
         return fs->makeDir(fs, path, perms, owner, group);
     }
@@ -24688,6 +24732,20 @@ PUBLIC MprThreadService *mprCreateThreadService()
 
 PUBLIC void mprStopThreadService()
 {
+#if ME_WIN_LIKE
+    MprThreadService    *ts;
+    MprThread           *tp;
+    int                 i;
+
+    ts = MPR->threadService;
+    for (i = 0; i < ts->threads->length; i++) {
+        tp = (MprThread*) mprGetItem(ts->threads, i);
+        if (tp->hwnd) {
+            mprDestroyWindow(tp->hwnd);
+            tp->hwnd = 0;
+        }
+    }
+#endif
 }
 
 
@@ -24800,7 +24858,6 @@ static void manageThread(MprThread *tp, int flags)
         mprMark(tp->mutex);
 
     } else if (flags & MPR_MANAGE_FREE) {
-        assert(tp->pid == 0);
 #if ME_WIN_LIKE
         if (tp->threadHandle) {
             CloseHandle(tp->threadHandle);
@@ -27840,6 +27897,21 @@ static void manageWaitService(MprWaitService *ws, int flags)
 }
 
 
+PUBLIC void mprStopWaitService()
+{
+#if ME_WIN_LIKE
+    MprWaitService  *ws;
+
+    ws = MPR->waitService;
+    if (ws) {
+        mprDestroyWindowClass(ws->wclass);
+        ws->wclass = 0;
+    }
+#endif
+    MPR->waitService = 0;
+}
+
+
 static MprWaitHandler *initWaitHandler(MprWaitHandler *wp, int fd, int mask, MprDispatcher *dispatcher, void *proc, 
     void *data, int flags)
 {
@@ -29418,7 +29490,8 @@ PUBLIC void mprWriteToOsLog(cchar *message, int level)
         if (RegCreateKeyEx(HKEY_LOCAL_MACHINE, wide(logName), 0, NULL, 0, KEY_ALL_ACCESS, NULL, 
                 &hkey, &exists) == ERROR_SUCCESS) {
             value = "%SystemRoot%\\System32\\netmsg.dll";
-            if (RegSetValueEx(hkey, UT("EventMessageFile"), 0, REG_EXPAND_SZ, (uchar*) value, (int) slen(value) + 1) != ERROR_SUCCESS) {
+            if (RegSetValueEx(hkey, UT("EventMessageFile"), 0, REG_EXPAND_SZ, (uchar*) value, 
+                    (int) slen(value) + 1) != ERROR_SUCCESS) {
                 RegCloseKey(hkey);
                 return;
             }
