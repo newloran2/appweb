@@ -20004,7 +20004,7 @@ PUBLIC ssize httpWriteBlock(HttpQueue *q, cchar *buf, ssize len, int flags)
     }
     tx->responded = 1;
 
-    for (totalWritten = 0; len > 0; ) {
+    for (totalWritten = 0; len > 0 && conn->error == 0; ) {
         if (conn->state >= HTTP_STATE_FINALIZED) {
             return MPR_ERR_CANT_WRITE;
         }
